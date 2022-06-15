@@ -1,0 +1,732 @@
+So one thing from the emails was that I was trying to push for unique IDs and versioning on the taxon list.
+ You remember that discussion…
+
+There was a risk to truncation if the taxon name was updated after data entry. 
+The calculation I think had a default action for any taxon name not found in the list and applied a truncation
+code for that scenario, where perhaps there should be a proper code. The use of a unique ID and version number 
+would mean that mapping was always maintained. 
+
+
+
+
+1	Species truncation script:
+Inputs:
+inputData			-	Table
+psaData			-	Table
+speciesGroupDf	 (lookup)	-	Table
+ambiMultiplierDf (lookup)	-	Table
+substratumDf (lookup)		-	Table
+salinityDf (lookup)		-	Table
+regsDf (lookup)			-	Table
+refMultipliers (lookup)		-	Table
+meshRegs (lookup)		-	Table
+refLimitsDf (lookup)		-	Table
+columnsToSplitBy (lookup)	-	Column
+
+Outputs:
+outDf	-	Table
+
+Code:
+aquacultureWrapper <- function (inputData, psaData, speciesGroupDf, ambiMultiplier, columnsToSplitBy = NULL, countCol = NULL, speciesCol = NULL){
+  
+  
+  if (is.null(speciesCol)) {
+    speciesCol <- "Species"
+  }
+  if (is.null(countCol)) {
+    countCol <- "Count"	
+  }
+  if(is.null(columnsToSplitBy)){
+    stop("columnstoSplitBy needs populated")
+  }
+  
+  if (nrow(inputData) < 1) {
+    ### return a df matching the 
+  }
+  
+  
+  ## reduce the data down to only the species, count and split by column 
+  data <- inputData[, c(speciesCol, countCol, columnsToSplitBy )]
+  data[[speciesCol]] <- tolower(data[[speciesCol]])
+  
+  ## need to make a data frame with other columns and merge at the end somehow. need to check there is extra columns first
+  if(length(names(inputData)) != length( c(speciesCol, countCol, columnsToSplitBy ))){
+    
+    extraData <- unique.data.frame(inputData[,!names(inputData) %in% c(speciesCol, countCol) ]  )
+    
+    
+  }## 
+  
+  
+  if (length(columnsToSplitBy)< 1 || nrow(data) < 1) {
+    dfList <- NULL
+    dfList[[1]] <- data
+    psaList <- NULL
+    psaList[[1]] <- psaData
+  
+  }
+  else {
+    
+    
+    dfList <- splitFunction(data, columnsToSplitBy)
+    psaList <- splitFunction(psaData, columnsToSplitBy)
+  }
+  
+ 
+  ## read in substratum df, salinitym, ref multipliers and regs. these will be tables in the library
+  ## in spotfire these ate tables as the library isnt built yet
+  ## <library>:::<tablename>
+  #substratumDf <- read.csv(".//tables//substratumDf.csv")
+  ## read in the salinity default values
+  #salinityDf <- read.csv(".//tables//salinityDf.csv")
+  ## read in the regs table
+  #regsDf <-  read.csv(".//tables//regs.csv")
+  ## read in ref multipliers
+  #refMultipliers <- read.csv(".//tables//refMultiplier.csv")
+  
+
+
+  dataSplit <- lapply(names(dfList), function(dataSplit, speciesCol, countCol, columnsToSplitBy){
+    
+    ## reduce down the lists    
+    innerData <- dfList[[dataSplit]]
+    innerPSA <- psaList[[dataSplit]] 
+    
+    ## from the inner PSA some variables can be taken
+    substratum <- tolower(innerPSA$substratum )
+    sieveSize <- innerPSA$sieveSize
+    salinityRegime <- innerPSA$salinityRegime
+    
+    ## this next two are hard coded to be grab as the input data doesnt deal with it. 
+    sampleCategory <- "Grab"
+    sampleArea <-  0.1
+    
+    if(length(columnsToSplitBy) ==1){
+      
+      idDf <- data.frame(unique(innerData[, columnsToSplitBy]))
+      names(idDf) <- columnsToSplitBy
+      
+    }else{
+      ## unique id 
+      idDf <- unique.data.frame(innerData[, columnsToSplitBy])
+    }
+    
+    ## remove any with no count.. this part may need removed
+    innerData <-innerData[!is.na(innerData[[countCol]]), ]
+    ## remove any with count of zero.. again this may need removed. 
+    innerData <-innerData[innerData[[countCol]] >0, ]
+    
+    ### changes will need made now as the eg multiplier etc is now an input 
+    ## need to check the simpsons and ambi calc to
+    ## calculate the values
+    calculatedAMBI <- AMBICalc(innerData, speciesCol, countCol)
+    calculatedSimpsons <- simpsonsCalc(innerData, speciesCol, countCol)
+    numberOfSpecies <-   nrow(innerData)
+   Comment <- NA
+    ## psa part 
+    modifiedDf <- modifyValues (numberOfSpecies = numberOfSpecies, AMBI = calculatedAMBI$Ambi, Simpsons =calculatedSimpsons$Lambda, sieveSize = sieveSize)
+
+  ## now look at the substratum. 
+    ## this will test if the psa data total is between 99-100% (allowing for errors), if not it will get psa default from the substratum df. 
+    
+    ## get the total of the psa %
+    sumTotal <- sum(innerPSA[, c("PSA63","PSA125","PSA250","PSA500","PSA1000","PSA2000","PSA4000","PSA8000","PSAOver8000") ])
+   
+     ## a check for blank psa data
+     if(is.na(sumTotal)){
+      sumTotal <- 0 
+    }## end iof if is na.
+    
+    
+    ## now look at the substratum. 
+    ## this will test if the psa data total is between 99-100% (allowing for errors), if not it will get psa default from the substratum df. 
+    if(nrow(innerPSA) ==1 && sumTotal > 99){
+      
+      psaMeanDf <-makePSAMeanDf(innerPSA)
+      
+    }else{
+   
+      ## use substratumDf and create a dataframe using the default values 
+      chosenSubstratum <- substratumDf[substratumDf$Substratum ==substratum, ]
+      
+      if(nrow(chosenSubstratum) ==1){
+        
+        psaMeanDf <- chosenSubstratum[, c( "PSAMean","PSASorting","PSASkew","PSAKurtosis")]
+        innerPSA <- cbind(unique(innerData[, columnsToSplitBy]), chosenSubstratum[c("PSA63", "PSA125", "PSA250", "PSA500", "PSA1000", "PSA2000", "PSA4000", "PSA8000", "PSAOver8000")])
+     
+        Comment <- "Substratum default used"
+                
+      }else{
+      
+        ## make a blank df to return
+        outDf  <- cbind(unique(innerData[, columnsToSplitBy]), data.frame(Ambi = NA,Simpsons= NA,Species= NA,GroupOnePerc= NA,GroupTwoPerc= NA,GroupThreePerc= NA,GroupFourPerc= NA,GroupFivePerc= NA,NotAssignedPerc= NA,MostabundantTaxa= NA,SecondMostAbundantTaxa= NA,
+                                  ThirdMostAbundantTaxa= NA,fourthMostAbundantTaxa= NA,fifthMostAbundantTaxa= NA,AmbiRef= NA,SimpsonsRef= NA,SpeciesRef= NA,IQI= NA,ITI= NA, 
+                                  Comment = "No PSA and Incorrect substratum"))
+        return(outDf)
+        
+
+      }
+      
+      
+      
+    }## end of is sum psa > 99
+    
+  
+
+    averageSalinity <- salinityDf[salinityDf$SalinityRegime ==salinityRegime, ]$AverageSalinity
+
+    ## now for columns AM - HH, this needs inner psa, psa meanDf,regs table, sample type (grab or core)
+    transformDf <- transformFunction(innerPSA, psaMeanDf, regsDf, sampleCategory, averageSalinity)
+    
+    ##columnc FE - HH, compliant or not. 
+    compliantDf <- compliantFunction(transformDf,regsDf, sampleCategory )
+     
+    ## for this part we need to use the ref multipliers table. this needs reduced down by input Area, sampleCategory
+    refMultipliers <- refMultipliers[refMultipliers$Area == sampleArea & refMultipliers$SampleCategory == sampleCategory, ]
+
+ 
+    # now calculate the reference values (columns HI - HK on excel sheet)
+    sRef <-  ( exp(sum(transformDf[transformDf$Category == "S", ]$Value)) -  1) * refMultipliers$SRefMulti
+    ambiRef <- (sin(sum(transformDf[transformDf$Category == "Ambi", ]$Value))) * refMultipliers$AmbiRefMulti 
+    simpsonRef <- (sin(sum(transformDf[transformDf$Category == "Simpsons", ]$Value))) * refMultipliers$SimpsonsRefMulti
+    
+    
+    endNumberSpecies <- ((numberOfSpecies/sRef)^0.1) * 0.54
+    endAmbi <-  (modifiedDf$AlteredAmbi/ambiRef) * 0.38 
+    endSimpsons <- (modifiedDf$alteredSimpsons/simpsonRef) * 0.08 
+    
+    
+    ##IQI calc
+    IQIEQR <- ((endAmbi + endSimpsons + endNumberSpecies) -0.4)  / 0.6
+   
+    ## ITI calc
+    ITIEQR <- ITIFunction (innerData, speciesCol, countCol)
+   
+    outDf <- cbind(idDf, calculatedAMBI)
+    ## altering to be the 1-(ambi /7)
+    outDf$Ambi <- 1-(outDf$Ambi/7)
+    ## make it 1- simpsons
+    simpsonsCalcValue <- 1- (calculatedSimpsons$Lambda)
+    outDf <- cbind(outDf,data.frame(Simpsons = simpsonsCalcValue,Species = calculatedSimpsons$NumberSpecies,
+                                    AmbiRef = ambiRef, SimpsonsRef =simpsonRef, SpeciesRef  = sRef, IQI = IQIEQR, ITI=ITIEQR, Comment = Comment ) )           
+    
+  }, speciesCol = speciesCol, countCol = countCol, columnsToSplitBy= columnsToSplitBy)## end of data split
+  
+  dataSplit <- do.call("rbind", dataSplit)
+  
+  
+  ## get the output ready
+  row.names(dataSplit) <- seq(1, nrow(dataSplit))
+  
+  
+  dataSplit <- dataSplit[,c(columnsToSplitBy,"Ambi","Simpsons","Species","GroupOnePerc","GroupTwoPerc","GroupThreePerc","GroupFourPerc","GroupFivePerc","NotAssignedPerc","MostabundantTaxa","SecondMostAbundantTaxa",
+                            "ThirdMostAbundantTaxa","fourthMostAbundantTaxa","fifthMostAbundantTaxa","AmbiRef","SimpsonsRef","SpeciesRef","IQI","ITI","Comment")]
+  
+  
+  return(dataSplit)
+  
+}## end of aquacultureWrapper
+
+##aquacultureWrapper(inputData = inputData, psaData = psaData, speciesGroupDf = speciesGroupDf, ambiMultiplier = ambiMultiplierDf, columnsToSplitBy = c("SAMPLING_POINT","SAMPLED.DATE"), countCol = NULL, speciesCol = NULL)
+
+
+
+
+
+
+################################
+###############################
+
+AMBICalc <- function(inputDf,speciesCol, countCol){
+  
+  
+  ## new part to state these from data
+  IQISpeciesGroupDf <- speciesGroupDf[, c("Species","IQI_AMBI_EG")]
+  names(IQISpeciesGroupDf) <- c("Species","Group")
+  IQISpeciesGroupDf$Species <- tolower(IQISpeciesGroupDf$Species)
+  egMultiplierDf <- ambiMultiplierDf[,c("IQI_AMBI_EG","IQI_EG_MULTIPLIER")]
+  names(egMultiplierDf) <- c("Group","IQIMultiplier")
+  
+  
+  inputDf <- merge(inputDf, IQISpeciesGroupDf, by.x = speciesCol, by.y = "Species", all.x=T)
+  
+  ## first get the number of taxa. 
+  noTaxa <- nrow(inputDf)
+  ## get the total count of taxa
+  totalAbundance <- sum(inputDf[[countCol]])
+  ## need to get total abundance of groups as this is what is used for % of group. 
+  totalGroupAbundance <- sum(inputDf[!is.na(inputDf$Group),][[countCol]])
+  
+  ## percentage of total species count not assigned. this is completed here as % in group doesnt use not assigned in the total count. 
+  if(any(is.na(inputDf$Group))){
+    notAssignedPerc <- (sum(inputDf[is.na(inputDf$Group), ]$Count))/ sum (inputDf$Count)
+  }else{
+    notAssignedPerc <-NA
+  }   
+  
+  
+  groupSplit <- lapply(split(inputDf, inputDf$Group), function(groupData, countcol){
+    
+    outDf <- data.frame(group = unique(groupData$Group), Abundance = sum(groupData[[countCol]]) )
+    
+    return(outDf)
+    
+  }, countcol=countcol)## end of group split
+  
+  
+  groupSplit <- do.call("rbind", groupSplit)
+  
+  ## get a % of group abundance of the total sample abundance
+  groupSplit$PercentContribution <- (groupSplit$Abundance/totalGroupAbundance)*100
+  
+  ## now the AMBI calculation
+  ## get % and make zero if none
+  ## the length is to catch the numeric(0) which are generated if the group isnt present
+  groupOnePerc <- ifelse (length(groupSplit[groupSplit$group ==1, ]$PercentContribution) ==0, 0, groupSplit[groupSplit$group ==1, ]$PercentContribution)
+  groupTwoPerc <- ifelse (length(groupSplit[groupSplit$group ==2, ]$PercentContribution)==0, 0, groupSplit[groupSplit$group ==2, ]$PercentContribution)
+  groupThreePerc <- ifelse (length(groupSplit[groupSplit$group ==3, ]$PercentContribution)==0, 0, groupSplit[groupSplit$group ==3, ]$PercentContribution)
+  groupFourPerc <-   ifelse (length(groupSplit[groupSplit$group ==4, ]$PercentContribution)==0, 0, groupSplit[groupSplit$group ==4, ]$PercentContribution)
+  groupFivePerc   <- ifelse (length(groupSplit[groupSplit$group ==5, ]$PercentContribution)==0, 0, groupSplit[groupSplit$group ==5, ]$PercentContribution)
+  
+  
+  ## get the Eg multiplier from the egmultiplier Df. 
+  egOne <- egMultiplierDf[egMultiplierDf$Group== 1, ]$IQIMultiplier
+  egTwo <- egMultiplierDf[egMultiplierDf$Group== 2, ]$IQIMultiplier
+  egThree <- egMultiplierDf[egMultiplierDf$Group== 3, ]$IQIMultiplier
+  egFour <- egMultiplierDf[egMultiplierDf$Group== 4, ]$IQIMultiplier
+  egFive <-  egMultiplierDf[egMultiplierDf$Group== 5, ]$IQIMultiplier 
+  
+  ## now the AMBI calculation 
+  ambi <- ((egOne * groupOnePerc)+(egTwo * groupTwoPerc)+(egThree*groupThreePerc)+(egFour * groupFourPerc)+(egFive*groupFivePerc))/ 100
+  
+  
+  
+  
+  ## the new part to put in species abundance
+  inputDf$SpeciesAbundance <- round((inputDf$Count /totalAbundance)* 100,2)
+  ## getthe unique ranks
+  uniqueRanks <-  unique(inputDf$SpeciesAbundance)
+  ## get the values for the ranks
+  mostAbundantValue <- uniqueRanks[rank(-uniqueRanks) ==1]
+  secondAbundantValue <- uniqueRanks[rank(-uniqueRanks) ==2]
+  thirdAbundantValue <- uniqueRanks[rank(-uniqueRanks) ==3]
+  fourthAbundantValue <- uniqueRanks[rank(-uniqueRanks) ==4]
+  fifthAbundantValue <- uniqueRanks[rank(-uniqueRanks) ==5]
+  
+  
+  
+  ## get species with these values and paste together along with the unique percentage
+  mostAbundant <-  paste(paste(inputDf[inputDf$SpeciesAbundance == mostAbundantValue, ]$Species, collapse = ", ")," (",unique(inputDf[inputDf$SpeciesAbundance == mostAbundantValue, ]$SpeciesAbundance),"%)", collapse = "")
+  secondAbundant <-  paste(paste(inputDf[inputDf$SpeciesAbundance == secondAbundantValue, ]$Species, collapse = ", ")," (",unique(inputDf[inputDf$SpeciesAbundance == secondAbundantValue, ]$SpeciesAbundance),"%)", collapse = "")
+  thirdAbundant <-  paste(paste(inputDf[inputDf$SpeciesAbundance == thirdAbundantValue, ]$Species, collapse = ", ")," (",unique(inputDf[inputDf$SpeciesAbundance == thirdAbundantValue, ]$SpeciesAbundance),"%)", collapse = "")
+  fourthAbundant <-  paste(paste(inputDf[inputDf$SpeciesAbundance == fourthAbundantValue, ]$Species, collapse = ", ")," (",unique(inputDf[inputDf$SpeciesAbundance == fourthAbundantValue, ]$SpeciesAbundance),"%)", collapse = "")
+  fifthAbundant <-  paste(paste(inputDf[inputDf$SpeciesAbundance == fifthAbundantValue, ]$Species, collapse = ", ")," (",unique(inputDf[inputDf$SpeciesAbundance == fifthAbundantValue, ]$SpeciesAbundance),"%)", collapse = "")
+  
+  
+  
+  outDf <- data.frame( Ambi = ambi, GroupOnePerc =groupOnePerc , GroupTwoPerc = groupTwoPerc, GroupThreePerc = groupThreePerc, 
+                       GroupFourPerc = groupFourPerc, GroupFivePerc =groupFivePerc, NotAssignedPerc = notAssignedPerc,
+                       MostabundantTaxa =mostAbundant, SecondMostAbundantTaxa =secondAbundant,
+                       ThirdMostAbundantTaxa = thirdAbundant,
+                       fourthMostAbundantTaxa = fourthAbundant,
+                       fifthMostAbundantTaxa = fifthAbundant) 
+  
+  
+  
+  return(outDf)
+  
+  
+  
+  
+}## end of ambi calc
+
+##########################
+##########################
+
+
+simpsonsCalc <- function(inputDf,speciesCol, countCol){
+  
+  
+  ## get the values needed in this calculation
+  noTaxa <- nrow(inputDf)  
+  totalAbundance <- sum(inputDf[[countCol]])
+  
+  ## work on all taxon in sample at once
+  inputDf$Lambda <- (inputDf[[countCol]] * (inputDf[[countCol]] - 1)) / (totalAbundance * (totalAbundance-1))
+  
+  
+  ## again not sure what has to be returned here. the overall lambda? or individual lambda per taxon?
+  ## overall is being returned at present.
+  outDf <- data.frame(NumberSpecies = noTaxa ,  TotalSpeciesCount = totalAbundance, Lambda = sum(inputDf$Lambda) )
+  
+  return(outDf)
+  
+}## end of simpsonsCalc
+
+
+############################
+############################
+
+makePSAMeanDf <- function(PSADf ){
+  
+  
+  ## psa stuff
+  sumofPercentages <- PSADf$PSA63+PSADf$PSA125+PSADf$PSA250+PSADf$PSA500+PSADf$PSA1000+PSADf$PSA2000+PSADf$PSA4000+PSADf$PSA8000+PSADf$PSAOver8000
+  
+  ## PSA mean
+  PSAMean <- (((PSADf$PSA63*(((0+(2^-4))/2)*1000))
+               +(PSADf$PSA125*((((2^-4)+(2^-3))/2)*1000))
+               +(PSADf$PSA250*((((2^-3)+(2^-2))/2)*1000))    
+               +(PSADf$PSA500*((((2^-2)+(2^-1))/2)*1000))
+               +(PSADf$PSA1000*((((2^-1)+(2^0))/2)*1000))
+               +(PSADf$PSA2000*((((2^0)+(2^1))/2)*1000))
+               +(PSADf$PSA4000*((((2^1)+(2^2))/2)*1000))
+               +(PSADf$PSA8000*((((2^2)+(2^3))/2)*1000))
+               +(PSADf$PSAOver8000*((((2^3)+(2^4))/2)*1000)))/(sumofPercentages))
+  
+  ##PSA sorting
+  PSASorting <-   ((((((((((2^-4))/2)*1000)- PSAMean)^2)*PSADf$PSA63)
+                     +(((((((2^-4)+(2^-3))/2)*1000)- PSAMean)^2)* PSADf$PSA125)
+                     +(((((((2^-3)+(2^-2))/2)*1000)- PSAMean)^2)* PSADf$PSA250)
+                     +(((((((2^-2)+(2^-1))/2)*1000)- PSAMean)^2)* PSADf$PSA500)
+                     +(((((((2^-1)+(2^0))/2)*1000)- PSAMean)^2)* PSADf$PSA1000)
+                     +(((((((2^0)+(2^1))/2)*1000)- PSAMean)^2)* PSADf$PSA2000)
+                     +(((((((2^1)+(2^2))/2)*1000)- PSAMean)^2)* PSADf$PSA4000)
+                     +(((((((2^2)+(2^3))/2)*1000)- PSAMean)^2)* PSADf$PSA8000)
+                     +(((((((2^3)+(2^4))/2)*1000)- PSAMean)^2)* PSADf$PSAOver8000))/(sumofPercentages))^0.5)
+  ## PSA Skew
+  PSASkew <-   (((((((((2^-4))/2)*1000)- PSAMean)^3)* PSADf$PSA63)
+                 +(((((((2^-4)+(2^-3))/2)*1000)- PSAMean)^3)* PSADf$PSA125)
+                 +(((((((2^-3)+(2^-2))/2)*1000)- PSAMean)^3)* PSADf$PSA250)
+                 +(((((((2^-2)+(2^-1))/2)*1000)- PSAMean)^3)* PSADf$PSA500)
+                 +(((((((2^-1)+(2^0))/2)*1000)- PSAMean)^3)* PSADf$PSA1000)
+                 +(((((((2^0)+(2^1))/2)*1000)- PSAMean)^3)* PSADf$PSA2000)
+                 +(((((((2^1)+(2^2))/2)*1000)- PSAMean)^3)* PSADf$PSA4000)
+                 +(((((((2^2)+(2^3))/2)*1000)- PSAMean)^3)* PSADf$PSA8000)
+                 +(((((((2^3)+(2^4))/2)*1000)- PSAMean)^3)* PSADf$PSAOver8000))/((sumofPercentages)*(PSASorting^3)))
+  
+  
+  ##PSA kurtosis
+  PSAKurtosis <- (((((((((2^-4))/2)*1000)- PSAMean)^4)* PSADf$PSA63)
+                   +(((((((2^-4)+(2^-3))/2)*1000)- PSAMean)^4)* PSADf$PSA125)
+                   +(((((((2^-3)+(2^-2))/2)*1000)- PSAMean)^4)* PSADf$PSA250)
+                   +(((((((2^-2)+(2^-1))/2)*1000)- PSAMean)^4)* PSADf$PSA500)
+                   +(((((((2^-1)+(2^0))/2)*1000)- PSAMean)^4)* PSADf$PSA1000)
+                   +(((((((2^0)+(2^1))/2)*1000)- PSAMean)^4)* PSADf$PSA2000)
+                   +(((((((2^1)+(2^2))/2)*1000)- PSAMean)^4)* PSADf$PSA4000)
+                   +(((((((2^2)+(2^3))/2)*1000)- PSAMean)^4)* PSADf$PSA8000)
+                   +(((((((2^3)+(2^4))/2)*1000)- PSAMean)^4)* PSADf$PSAOver8000))/((sumofPercentages)*( PSASorting ^4)))
+  
+  outDf <- data.frame(PSAMean = PSAMean, PSASorting = PSASorting, PSASkew = PSASkew, PSAKurtosis =PSAKurtosis)
+  return(outDf)
+  
+}## end of psa mean df
+##makePSAMeanDf(psaDf[1,])
+
+
+#####################
+#####################
+ITIFunction <- function(inputDf,speciesCol, countCol){
+  
+  
+  ## get the eg multiplier
+  egMultiplierDf <- ambiMultiplierDf[,c("IQI_AMBI_EG","ITI_MULTIPLIER")]
+  names(egMultiplierDf) <- c("Group","ITIMultiplier")
+  
+  ## get the species Df
+  ITISpeciesGroupDf <- speciesGroupDf[, c("Species","ITI_CODE")]
+  names(ITISpeciesGroupDf) <- c("Species","Group")
+  ITISpeciesGroupDf$Species <- tolower(ITISpeciesGroupDf$Species)
+  
+  
+  ## merge on the groups.
+  inputDf <- merge(inputDf, ITISpeciesGroupDf, by.x = speciesCol, by.y = "Species", all.x=T)
+  
+  ##ITI calculation#
+  ## get totals per group
+  groupSplit <- lapply(split(inputDf, inputDf$Group),function(groupData, countCol){
+    
+    outDf <- data.frame(Group = unique(groupData$Group), Abundance = sum(groupData[[countCol]]) )
+    return(outDf)
+    
+    
+  }, countCol=countCol)## groupSplit
+  
+  groupSplit <- do.call("rbind", groupSplit)
+  
+  ## get the individual abundances
+  groupOneAbundance <- ifelse(length(groupSplit[groupSplit$Group ==1, ]$Abundance) > 0, groupSplit[groupSplit$Group ==1, ]$Abundance, 0)
+  groupTwoAbundance <- ifelse(length(groupSplit[groupSplit$Group ==2, ]$Abundance) > 0, groupSplit[groupSplit$Group ==2, ]$Abundance, 0)
+  groupThreeAbundance <- ifelse(length(groupSplit[groupSplit$Group ==3, ]$Abundance) > 0, groupSplit[groupSplit$Group ==3, ]$Abundance, 0)
+  groupFourAbundance <- ifelse(length(groupSplit[groupSplit$Group ==4, ]$Abundance) > 0, groupSplit[groupSplit$Group ==4, ]$Abundance, 0)
+  
+  ## get the Eg multiplier from the egmultiplier Df. 
+  egOne <- egMultiplierDf[egMultiplierDf$Group== 1, ]$ITIMultiplier
+  egTwo <- egMultiplierDf[egMultiplierDf$Group== 2, ]$ITIMultiplier
+  egThree <- egMultiplierDf[egMultiplierDf$Group== 3, ]$ITIMultiplier
+  egFour <- egMultiplierDf[egMultiplierDf$Group== 4, ]$ITIMultiplier
+  
+  ## now to calc the ITI 
+  ITICalc <- 100- 33.3*( ((egOne*groupOneAbundance )+(egTwo* groupTwoAbundance)+(egThree* groupThreeAbundance)+(egFour* groupFourAbundance))/( groupOneAbundance + groupTwoAbundance + groupThreeAbundance+groupFourAbundance     ))
+  
+  outDf <- data.frame(ITI = ITICalc)
+  return(outDf) 
+  
+}## end of ITI Function
+
+
+#######################
+######################
+
+
+## to calculate the altered ambi, simpsons and S depending on grab size. 
+
+modifyValues <- function(numberOfSpecies, AMBI, Simpsons, sieveSize){
+  
+  ## read in the meshregs table. this will eventually be a table in the library so can call it with <library>:::<tablename>
+  ## this also may be better beign passed into this and read in once in the wrapper part. 
+  #meshRegs <- read.csv(".//tables//meshregs.csv")
+  innerMeshRegs <- meshRegs[meshRegs$SieveMesh ==sieveSize, ]
+  
+  ## calc the ambi part 
+  innerAmbi <- (1- (AMBI/7))
+  ## and also the simpsons part
+  innerSimpsons <- 1- Simpsons
+  
+  
+  ## alter the species count, ambi and simpsons depending on the sieve size. 
+  alteredS <- exp(innerMeshRegs$SIntercept    + (log(numberOfSpecies +1) * innerMeshRegs$SGradient  ) + ((log(numberOfSpecies +1)^2) *innerMeshRegs$SSquaredGradient)  )-1 
+  alteredAmbi <- sin(innerMeshRegs$AmbiIntercept  + (asin(innerAmbi)* innerMeshRegs$AmbiGradient )  + (((asin(innerAmbi)^2)* innerMeshRegs$AmbiSquaredGradient))   )
+  #alteredSimpsons <- sin( innerMeshRegs$LambdaIntercept + (asin(Simpsons) * innerMeshRegs$LambdaGradient)+ (((asin(Simpsons)^2)* innerMeshRegs$LambdaSquaredGradient)))
+  alteredSimpsons <- sin( innerMeshRegs$LambdaIntercept + (asin(innerSimpsons) * innerMeshRegs$LambdaGradient)+ (((asin(innerSimpsons)^2)* innerMeshRegs$LambdaSquaredGradient)))
+  
+  outDf <- data.frame(AlteredAmbi = alteredAmbi, alteredSimpsons= alteredSimpsons, alteredSpecies = alteredS)
+  
+  return(outDf) 
+  
+  
+  
+}## end of modifyValues calc
+
+
+
+## modifyValues (numberOfSpecies = 8, AMBI = 4.0833, Simpsons = 0.254902, sieveSize = 500)
+## modifyValues (numberOfSpecies = 8, AMBI = 4.0833, Simpsons = 0.254902, sieveSize = 1000)
+## these values are taken from metricWrapper(initialData, columnsToSplitBy = c("GrabName", "SAMPLED_DATE") , psaDf = psaData)
+
+#########################
+#########################
+
+transformFunction<- function (innerPSA, psaMeanDf, regsDf, sampleType, averageSalinity){
+  
+  
+  
+  ## reduce down the regs Df by sampleType
+  innerRegsDf <- regsDf[, c("Category","Variable", sampleType)]
+  names(innerRegsDf) <- c("Category","Variable", "Value")
+  #########
+  ## remove sample from innerPsa
+  
+  
+  sample <- innerPSA[, !names(innerPSA) %in% c("PSA63","PSA125","PSA250","PSA500","PSA1000","PSA2000","PSA4000","PSA8000","PSAOver8000")]
+  innerPSA<- innerPSA[, c("PSA63","PSA125","PSA250","PSA500","PSA1000","PSA2000","PSA4000","PSA8000","PSAOver8000")]
+  
+  # can work on a few things at once. al;l transforms of basic psa are the same, as are transforms of mean, sorting, skew and kurtosis.
+  transformedPSADf <- asin(innerPSA/100 )
+  names(transformedPSADf) <- paste("Transformed", names(transformedPSADf), sep="")
+  transformedMeanDf <- log(psaMeanDf+1)
+  names(transformedMeanDf) <- paste("Transformed", names(transformedMeanDf), sep="")
+  transformedAvgSalinity <- log(averageSalinity+1)
+  
+  ## generate a transfomred output that matches the output at the bottom
+  transformOutDf <- data.frame(Category = rep("Basic", 14),
+                               Variable = c("PSA63","PSA125","PSA250","PSA500","PSA1000","PSA2000","PSA4000","PSA8000","PSAOver8000",
+                                            "PSAMean","PSASort","PSASkew","PSAKurt","AvgSalinity"),
+                               Value =c(do.call("cbind",transformedPSADf), do.call("cbind",transformedMeanDf),transformedAvgSalinity  ))
+  
+  
+  ## now to lapply over the different catagories in the regs df
+  categorySplit <- lapply(c("S", "Ambi", "Simpsons"), function(cat ){
+    
+    ## reduce the regs down
+    catDf <- innerRegsDf[innerRegsDf$Category == cat, ]
+    
+    
+    ## now the calculations. these should be the same for all three categories.
+    ## from psa data
+    Int <- catDf[catDf$Variable == "Int",]$Value
+    PSA63 <- catDf[catDf$Variable =="PSA63" ,]$Value * transformedPSADf[,"TransformedPSA63" ]
+    PSA63Squared <- catDf[catDf$Variable =="PSA63Squared" ,]$Value * (transformedPSADf[,"TransformedPSA63" ]^2)
+    PSA125 <- catDf[catDf$Variable =="PSA125" ,]$Value * transformedPSADf[,"TransformedPSA125" ]
+    PSA125Squared <- catDf[catDf$Variable =="PSA125Squared" ,]$Value * (transformedPSADf[,"TransformedPSA125" ]^2)
+    PSA250 <- catDf[catDf$Variable =="PSA250" ,]$Value * transformedPSADf[,"TransformedPSA250" ]
+    PSA250Squared <- catDf[catDf$Variable =="PSA250Squared" ,]$Value * (transformedPSADf[,"TransformedPSA250" ]^2)
+    PSA500 <- catDf[catDf$Variable =="PSA500" ,]$Value * transformedPSADf[,"TransformedPSA500" ]
+    PSA500Squared <- catDf[catDf$Variable =="PSA500Squared" ,]$Value * (transformedPSADf[,"TransformedPSA500" ]^2)
+    PSA1000 <- catDf[catDf$Variable =="PSA1000" ,]$Value * transformedPSADf[,"TransformedPSA1000" ]
+    PSA1000Squared <- catDf[catDf$Variable =="PSA1000Squared" ,]$Value * (transformedPSADf[,"TransformedPSA1000" ]^2)
+    PSA2000 <- catDf[catDf$Variable =="PSA2000" ,]$Value * transformedPSADf[,"TransformedPSA2000" ]
+    PSA2000Squared <- catDf[catDf$Variable =="PSA2000Squared" ,]$Value * (transformedPSADf[,"TransformedPSA2000" ]^2)
+    PSA4000 <- catDf[catDf$Variable =="PSA4000" ,]$Value * transformedPSADf[,"TransformedPSA4000" ]
+    PSA4000Squared <- catDf[catDf$Variable =="PSA4000Squared" ,]$Value * (transformedPSADf[,"TransformedPSA4000" ]^2)
+    PSA8000 <- catDf[catDf$Variable =="PSA8000" ,]$Value * transformedPSADf[,"TransformedPSA8000" ]
+    PSA8000Squared <- catDf[catDf$Variable =="PSA8000Squared" ,]$Value * (transformedPSADf[,"TransformedPSA8000" ]^2)
+    PSAOver8000 <- catDf[catDf$Variable =="PSAOver8000" ,]$Value * transformedPSADf[,"TransformedPSAOver8000" ]
+    PSAOver8000Squared <- catDf[catDf$Variable =="PSAOver8000Squared" ,]$Value * (transformedPSADf[,"TransformedPSAOver8000" ]^2)
+    
+    ## from psamean, skew etc
+    PSAMean <- catDf[catDf$Variable =="PSAMean" ,]$Value * (transformedMeanDf[,"TransformedPSAMean"])
+    PSAMeanSquared <- catDf[catDf$Variable =="PSAMeanSquared" ,]$Value * (transformedMeanDf[,"TransformedPSAMean"]^2) 
+    PSASort <- catDf[catDf$Variable =="PSASort" ,]$Value * (transformedMeanDf[,"TransformedPSASorting"])
+    PSASortSquared <- catDf[catDf$Variable =="PSASortSquared" ,]$Value * (transformedMeanDf[,"TransformedPSASorting"]^2)
+    PSASkew <- catDf[catDf$Variable =="PSASkew" ,]$Value * (transformedMeanDf[,"TransformedPSASkew"])
+    PSASkewSquared <- catDf[catDf$Variable =="PSASkewSquared" ,]$Value * (transformedMeanDf[,"TransformedPSASkew"]^2)
+    PSAKurt <- catDf[catDf$Variable =="PSAKurt" ,]$Value * (transformedMeanDf[,"TransformedPSAKurtosis"])
+    PSAKurtSquared <- catDf[catDf$Variable =="PSAKurtSquared" ,]$Value * (transformedMeanDf[,"TransformedPSAKurtosis"]^2)
+    
+    
+    ## now for the substartum part
+    Silt <- catDf[catDf$Variable =="Silt" ,]$Value * transformedPSADf[, "TransformedPSA63"]
+    SiltSquared <- catDf[catDf$Variable =="SiltSquared" ,]$Value * (transformedPSADf[, "TransformedPSA63"]^2)#
+    Sand <- catDf[catDf$Variable =="Sand" ,]$Value * sum(transformedPSADf[, c("TransformedPSA125", "TransformedPSA250", "TransformedPSA500", "TransformedPSA1000", "TransformedPSA2000") ])
+    SandSquared <- catDf[catDf$Variable =="SandSquared" ,]$Value * (sum(transformedPSADf[, c("TransformedPSA125", "TransformedPSA250", "TransformedPSA500", "TransformedPSA1000", "TransformedPSA2000") ])^2)
+    Gravel <- catDf[catDf$Variable =="Gravel" ,]$Value *sum(transformedPSADf[, c("TransformedPSA4000", "TransformedPSA8000", "TransformedPSAOver8000") ])  
+    GravelSquared <- catDf[catDf$Variable =="GravelSquared" ,]$Value * (sum(transformedPSADf[, c("TransformedPSA4000", "TransformedPSA8000", "TransformedPSAOver8000") ])  ^2)
+    
+    
+    AvgSalinity <-  catDf[catDf$Variable =="AvgSalinity" ,]$Value* transformedAvgSalinity
+    AvgSalinitySquared <-  catDf[catDf$Variable =="AvgSalinitySquared" ,]$Value* (transformedAvgSalinity^2)
+    AvgSalinityCubed <- catDf[catDf$Variable =="AvgSalinityCubed" ,]$Value* (transformedAvgSalinity^3)
+    
+    
+    ## create output vectors
+    ## the output is ver near teh same as the catDf, just different calculated values. 
+    valueVec <- c(Int,PSA63,PSA63Squared,PSA125,PSA125Squared,PSA250,PSA250Squared,PSA500,PSA500Squared,PSA1000,PSA1000Squared,PSA2000,PSA2000Squared,PSA4000,PSA4000Squared,PSA8000,PSA8000Squared,PSAOver8000,PSAOver8000Squared,PSAMean,PSAMeanSquared,PSASort,PSASortSquared,PSASkew,PSASkewSquared,PSAKurt,PSAKurtSquared,Silt,SiltSquared,Sand,SandSquared,Gravel,GravelSquared,AvgSalinity,AvgSalinitySquared,AvgSalinityCubed)
+    outDf <- catDf
+    outDf$Value <- valueVec
+    
+    return(outDf)
+    
+    
+  })## categorySplit
+  
+  categorySplit <- do.call("rbind", categorySplit)
+  
+  outDf <- rbind(transformOutDf, categorySplit)
+  
+  return(outDf)
+  
+}## end of transform function. 
+
+
+##############
+######################
+
+
+
+## the complient function has a few inputs these are 
+## the transform function output. 
+## it will use the table reflimits.csv, this will be read in but in the final libary it will be used from there. 
+
+compliantFunction <- function(transformDf,regsDf,  sampleType){
+  
+  ## read in the ref limits
+  ## this will eventually be a table in the library so can call it with <library>:::<tablename>
+  #refLimitsDf <- read.csv(".//tables//refLimits.csv")
+  
+  ## reduce down the regs Df by sampleType
+  innerRegsDf <- regsDf[, c("Category","Variable", sampleType)]
+  names(innerRegsDf) <- c("Category","Variable", "Value")
+  
+  
+  ## reduce down the ref Df by sampleType
+  innerRefLimitsDf <- refLimitsDf[, c("Category","Variable", sampleType, "Percentile")]
+  names(innerRefLimitsDf) <- c("Category","Variable", "Value","Percentile")
+  
+  
+  ## this part has to be completed first as the output is used for the rest of the compliant testing. 
+  ## first basic compliance. 
+  ## get the basic compliance elements from transformDf
+  basicDf <- transformDf[transformDf$Category == "Basic", ]
+  ## make a basicRefLimits
+  basicRefLimits <- innerRefLimitsDf[innerRefLimitsDf$Category == "Basic", ]
+  
+  ## lapply over the variable in basic Df
+  variableSplit <- lapply(unique(basicDf$Variable), function(variable){
+    
+    
+    innerDf <- basicDf[basicDf$Variable == variable, ]
+    innerRefDf <- basicRefLimits[basicRefLimits$Variable == variable, ] 
+    compliant <- ifelse((innerDf$Value >=innerRefDf[innerRefDf$Percentile == 0.05,]$Value) & (innerDf$Value <=innerRefDf[innerRefDf$Percentile == 0.95,]$Value), 0 , 1  )
+    
+    outDf <- data.frame(Category = "Basic", Variable = variable, Value = compliant)
+    return(outDf)
+    
+    
+  })## variable split
+  
+  basicCompliantDf <- do.call("rbind", variableSplit)
+  
+  ## now using this output calculate the rest of it. columns FS - HH
+  categorySplit <- lapply(c("S","Ambi","Simpsons"), function(cat){
+    
+    ## get the reg limits
+    catTransRegDf <- innerRegsDf[innerRegsDf$Category == cat, ]
+    
+    ## using the basic transforms outputs
+    PSA63 <- sum(catTransRegDf[catTransRegDf$Variable %in% c("PSA63", "PSA63Squared"), ]$Value) * basicCompliantDf[basicCompliantDf$Variable == "PSA63",]$Value
+    PSA125 <- sum(catTransRegDf[catTransRegDf$Variable %in% c("PSA125", "PSA125Squared"), ]$Value) * basicCompliantDf[basicCompliantDf$Variable == "PSA125",]$Value
+    PSA250 <- sum(catTransRegDf[catTransRegDf$Variable %in% c("PSA250", "PSA250Squared"), ]$Value) * basicCompliantDf[basicCompliantDf$Variable == "PSA250",]$Value
+    PSA500 <- sum(catTransRegDf[catTransRegDf$Variable %in% c("PSA500", "PSA500Squared"), ]$Value) * basicCompliantDf[basicCompliantDf$Variable == "PSA500",]$Value
+    PSA1000 <- sum(catTransRegDf[catTransRegDf$Variable %in% c("PSA1000", "PSA1000Squared"), ]$Value) * basicCompliantDf[basicCompliantDf$Variable == "PSA1000",]$Value
+    PSA2000 <- sum(catTransRegDf[catTransRegDf$Variable %in% c("PSA2000", "PSA2000Squared"), ]$Value) * basicCompliantDf[basicCompliantDf$Variable == "PSA2000",]$Value
+    PSA4000 <- sum(catTransRegDf[catTransRegDf$Variable %in% c("PSA4000", "PSA4000Squared"), ]$Value) * basicCompliantDf[basicCompliantDf$Variable == "PSA4000",]$Value
+    PSA8000 <- sum(catTransRegDf[catTransRegDf$Variable %in% c("PSA8000", "PSA8000Squared"), ]$Value) * basicCompliantDf[basicCompliantDf$Variable == "PSA8000",]$Value
+    PSAOver8000 <- sum(catTransRegDf[catTransRegDf$Variable %in% c("PSAOver8000", "PSAOver8000Squared"), ]$Value) * basicCompliantDf[basicCompliantDf$Variable == "PSAOver8000",]$Value
+    PSAMean <- sum(catTransRegDf[catTransRegDf$Variable %in% c("PSAMean", "PSAMeanSquared"), ]$Value) * basicCompliantDf[basicCompliantDf$Variable == "PSAMean",]$Value
+    PSASort <- sum(catTransRegDf[catTransRegDf$Variable %in% c("PSASort", "PSASortSquared"), ]$Value) * basicCompliantDf[basicCompliantDf$Variable == "PSASort",]$Value
+    PSASkew <- sum(catTransRegDf[catTransRegDf$Variable %in% c("PSASkew", "PSASkewSquared"), ]$Value) * basicCompliantDf[basicCompliantDf$Variable == "PSASkew",]$Value
+    PSAKurt <- sum(catTransRegDf[catTransRegDf$Variable %in% c("PSAKurt", "PSAKurtSquared"), ]$Value) * basicCompliantDf[basicCompliantDf$Variable == "PSAKurt",]$Value
+    AvgSalinity <- sum(catTransRegDf[catTransRegDf$Variable %in% c("AvgSalinity","AvgSalinitySquared"), ]$Value) * basicCompliantDf[basicCompliantDf$Variable == "AvgSalinity",]$Value
+    
+    valueVec <-  c(PSA63,PSA125, PSA250,PSA500, PSA1000, PSA2000, PSA4000, PSA8000, PSAOver8000, PSAMean, PSASort, PSASkew, PSAKurt, AvgSalinity )
+    variableVec <- c("PSA63","PSA125", "PSA250","PSA500","PSA1000", "PSA2000", "PSA4000", "PSA8000", "PSAOver8000", "PSAMean", "PSASort", "PSASkew", "PSAKurt", "AvgSalinity" )
+    categoryVec <- rep(cat, length(variableVec))
+    
+    catOutDf <- data.frame(Category =  categoryVec, Variable = variableVec, Value = valueVec)
+    
+    return(catOutDf)    
+    
+    
+    
+  })## end of category split
+  
+  
+  categorySplit <- do.call("rbind", categorySplit)
+  
+  outDf <- rbind(basicCompliantDf,categorySplit )
+  
+  return(outDf)
+  
+  
+}## end of compliant function. 
+
+##############################
+substratumDf$Substratum <- tolower(substratumDf$Substratum)
+
+
+if(nrow(inputData) < 1){
+ 
+ outDf <- as.data.frame(matrix(ncol = length(columnsToSplitBy)))
+ names(outDf) <- columnsToSplitBy
+  
+ outDf <- cbind(outDf,data.frame(Ambi = NA,Simpsons= NA,Species= NA,GroupOnePerc= NA,GroupTwoPerc= NA,GroupThreePerc= NA,GroupFourPerc= NA,GroupFivePerc= NA,NotAssignedPerc= NA,MostabundantTaxa= NA,SecondMostAbundantTaxa= NA,
+                                  ThirdMostAbundantTaxa= NA,fourthMostAbundantTaxa= NA,fifthMostAbundantTaxa= NA,AmbiRef= NA,SimpsonsRef= NA,SpeciesRef= NA,IQI= NA,ITI= NA, 
+                                  Comment = "No PSA and Incorrect substratum"))
+}else{
+outDf <- aquacultureWrapper(inputData = inputData, psaData = psaData, speciesGroupDf = speciesGroupDf, ambiMultiplier = ambiMultiplierDf, columnsToSplitBy = columnsToSplitBy, countCol = NULL, speciesCol = NULL)
+}
+
+
+outDf2 <- outDf
+

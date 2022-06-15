@@ -1,0 +1,134 @@
+1	Species truncation script:
+Inputs:
+inputSpeciesData		-	Table
+speciesGroupDf	 (lookup)	-	Table
+columnsToSplitBy (lookup)	-	Column
+
+Outputs:
+truncatedSpeciesDf	-	Table
+
+Code:
+truncation <- function(inputData,speciesGroupDf, columnsToSplitBy = NULL, speciesCol= NULL, countCol=NULL){
+  
+  
+  if (is.null(speciesCol)) {
+    speciesCol <- "Species"
+  }
+  if (is.null(countCol)) {
+    countCol <- "Count"
+  }
+  if(is.null(columnsToSplitBy)){
+    stop("columnstoSplitBy needs populated")
+  }
+  
+  if (nrow(inputData) < 1) {
+    ### return a df matching the 
+  }
+  
+  # data <- inputData[, c(speciesCol, countCol, columnsToSplitBy )]
+  data <- inputData
+  data[[speciesCol]] <- tolower(data[[speciesCol]])
+ 
+  
+#  ## need to make a data frame with other columns and merge at the end somehow. need to check there is extra columns first
+#  if(length(names(inputData)) != length( c(speciesCol, countCol, columnsToSplitBy ))){
+#    
+#    extraData <- unique.data.frame(inputData[,!names(inputData) %in% c(speciesCol, countCol) ]  )
+#    
+#    
+#  }## 
+  
+  
+  ## make the species in the species group df lower case. 
+  speciesGroupDf$Species <-tolower(speciesGroupDf$Species)
+  
+  ## merge the species and the truncatiopn onto the species data
+  data <- merge(data, speciesGroupDf[,c("Species","IQI_TRUNCATION_CODE")], by.x = speciesCol, by.y = "Species" , all.x = T )
+  
+   
+  
+  if (length(columnsToSplitBy)< 1 || nrow(data) < 1) {
+    dfList <- NULL
+    dfList[[1]] <- data
+  }
+  else {
+   # stop(paste(names(data), collapse = ", "))
+	dfList <- splitFunction(data, columnsToSplitBy)
+  }
+  dataSplit <- lapply(names(dfList), function(dataSplit, speciesCol, countCol, columnsToSplitBy){
+    
+    ## reduce down the lists    
+    innerData <- dfList[[dataSplit]]
+	
+	##################################### new part 18/12/2018 ##############################
+    
+    ## need to combine species here. remove the duplicates then carry on with the truncation. the sample number, sampledDate, IQI truncation should 
+    ## be identical. 
+    ## THIS LINE MUST BE REMOVED AS IT IS FOR TESTING ONLY TO GENERATE DUPLICATES.
+    ##innerData <-  rbind(innerData, innerData[1:3,])
+    
+    duplicateTable <- table(innerData[[speciesCol]])
+    duplicateTable <- duplicateTable[duplicateTable > 1]
+   
+    ## if there are duplicates
+    if(length(duplicateTable) > 0){
+      ## make two data frames one with duplicates, one without.
+       duplicateDf <- innerData[innerData[[speciesCol]] %in% names(duplicateTable), ]
+       noDuplicateDf <- innerData[!(innerData[[speciesCol]] %in% names(duplicateTable)), ]
+      
+       speciesSplit <- lapply(split(duplicateDf, duplicateDf[[speciesCol]]), function(speciesSplit, speciesCol,countCol){
+         
+         ## get a total, and apply it to  all row. Return only the first row (all rows data apart from count should be identical.)
+         speciesSplit[[countCol]] <- sum(speciesSplit[[countCol]])
+         return(speciesSplit[1,])
+         
+       }, speciesCol=speciesCol,countCol=countCol)## end of speciesSplit
+       
+       speciesSplit <- do.call("rbind", speciesSplit)
+    
+       ## recombine the no duplicates with this new species split df
+       innerData <- rbind(noDuplicateDf, speciesSplit)
+       
+
+    } ## end of if. 
+    
+
+########################################################################################
+	
+	
+	
+    ## generate a blank column for the new calculation
+    innerData$FinalCount <- rep(0, nrow(innerData))
+    
+    ## the truncation rules are pretty simple
+    ## 1) if truncation code = 0 then species count for that species is set to 0. 
+    ## 2) If truncation code is 2 AND a species count present, set it to 1.
+    ## 3) if truncation code is anything else then keep species count as is. 
+     
+    innerData$FinalCount <- ifelse(innerData$IQI_TRUNCATION_CODE == 0,  0 , innerData$FinalCount)
+    
+    innerData$FinalCount <- ifelse(innerData$IQI_TRUNCATION_CODE == 1 & innerData[[countCol]] >0,  1 , innerData$FinalCount)
+    
+    innerData$FinalCount <- ifelse(innerData$IQI_TRUNCATION_CODE == 2 | is.na(innerData$IQI_TRUNCATION_CODE),  innerData[[countCol]] , innerData$FinalCount)
+    
+    
+    return(innerData)    
+   
+      
+  }, speciesCol = speciesCol, countCol = countCol , columnsToSplitBy = columnsToSplitBy)## end of data split
+  
+  
+  outDf <- do.call("rbind", dataSplit)
+  
+  
+  ## before any columns removed or renamed i need to check the output and here will contain all data and will probably be the bets place to check
+   outDf[[countCol]] <- outDf$FinalCount
+  # outDf <- outDf[, !names(outDf) %in% c("FinalCount","IQI_TRUNCATION_CODE")]
+   #outDf <-  outDf[,c(speciesCol, countCol, columnsToSplitBy)]
+   
+   return(outDf)
+     
+}## end of truncation 
+truncatedSpeciesDf <- truncation(inputData = inputSpeciesData,speciesGroupDf = speciesGroupDf, columnsToSplitBy= columnsToSplitBy)
+
+
